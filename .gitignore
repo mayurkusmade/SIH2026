@@ -11,7 +11,39 @@ reference-repos/
 .ipynb_checkpoints/
 *.log
 
+# Generated at runtime: local biometric roster index (SQLite + numpy)
+frs_index.sqlite
+frs_index.sqlite-journal
+# Rotated event logs written when the event schema changes
+*.legacy.csv
+
+# Volumes / runtime state for the containerized edge node and C2 dashboard
+# (alerts.csv, frs_index.sqlite and rotated logs live under here in Docker)
+data/
+
+# Generated GIS demo artifact: the tactical map rendered without Streamlit,
+# for reviewing the map layer on a machine with no OpenCV installed.
+tactical_map_preview.html
+
+# Pose weights for behaviour analytics. Downloaded on demand by ultralytics,
+# ~13 MB each, and never committed - the model stack is per deployment.
+models/yolov8n-pose.pt
+models/yolo11n-pose.pt
+# Face models for the biometric FRS: OpenCV zoo YuNet detector (~230 KB) and
+# the insightface ArcFace recognizer (~174 MB). Never committed.
+models/face_detection_yunet.onnx
+models/arcface*.onnx
+
 # Environments & IDEs
 .vscode/
 .idea/
 .env
+
+# Agent tooling local state (not part of the project)
+.agents/
+.freebuff/
+
+# Project-local virtual environment (recommended over installing into a shared
+# interpreter: the vision stack is heavy and version-sensitive)
+.venv/
+venv/

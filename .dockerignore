@@ -1,0 +1,42 @@
+# Keep the build context small and free of local state. A surveillance image must
+# not carry one deployment's event log or biometric roster into another outpost.
+
+.git
+.gitignore
+.agents/
+.freebuff/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Runtime state (written into the mounted volume, never baked into the image)
+data/
+alerts*.csv
+frs_index.sqlite
+*.legacy.csv
+
+# Local scratch / tooling
+.vscode/
+.idea/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+/tmp/
+*.log
+
+# Model weights are mounted or pulled per deployment, not shipped in the image
+# layer: they change per sector and are large. See README - Deployment.
+models/*.pt
+models/*.onnx
+
+# Documentation and demo media
+*.md
+!README.md
+sample_videos/
+*.mp4
+*.avi
+*.mov

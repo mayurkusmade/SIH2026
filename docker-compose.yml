@@ -1,0 +1,145 @@
+# AnantaNetra / IBVAP field deployment.
+#
+#   broker      - the MQTT link between outposts and Sector HQ
+#   c2-hq       - the operator dashboard at Sector HQ
+#   edge-*      - unattended Border Out Post agents (headless, no browser)
+#
+# Every service runs the SAME image, so the analytics at an outpost and at HQ can
+# never drift apart.
+#
+#   docker compose up --build
+#   open http://localhost:8501            (Sector HQ command station)
+#
+# The demo uses the repo's local sample videos as camera sources. A real
+# deployment replaces `video_source` in modules/nodes.py with the outpost's
+# RTSP/ONVIF URL - no other change is needed, which is the point of keeping the
+# registry separate from the pipeline.
+
+services:
+  broker:
+    image: eclipse-mosquitto:2
+    container_name: ibvap-broker
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./deploy/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ibvap-broker-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -t '$$SYS/#' -C 1 -W 3 || exit 1"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Sector HQ command station. No camera is attached: this node exists to receive
+  # telemetry and command the picture.
+  # ---------------------------------------------------------------------------
+  c2-hq:
+    build: .
+    image: ibvap-edge:1.0
+    container_name: ibvap-c2-hq
+    restart: unless-stopped
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      IBVAP_ROLE: c2
+      IBVAP_NODE_ID: SECTOR-HQ
+      IBVAP_TELEMETRY: mqtt
+      IBVAP_MQTT_HOST: broker
+      IBVAP_MQTT_PORT: "1883"
+      IBVAP_LINK_PROFILE: 4G
+      IBVAP_DATA_DIR: /app/data
+    command:
+      - streamlit
+      - run
+      - app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./models:/app/models:ro
+      - ibvap-hq-data:/app/data
+
+  # ---------------------------------------------------------------------------
+  # Border Out Posts. Each runs headless and publishes to the broker.
+  # ---------------------------------------------------------------------------
+  edge-bop-a:
+    build: .
+    image: ibvap-edge:1.0
+    container_name: ibvap-edge-bop-a
+    restart: unless-stopped
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      IBVAP_ROLE: edge
+      IBVAP_NODE_ID: BOP-SECTOR-A
+      IBVAP_CHANNELS: "Channel 1"
+      IBVAP_TELEMETRY: mqtt
+      IBVAP_MQTT_HOST: broker
+      IBVAP_MQTT_PORT: "1883"
+      # A forward BOP runs on the worst link in the system, on purpose: this is
+      # what store-and-forward exists for.
+      IBVAP_LINK_PROFILE: DEGRADED_SATCOM
+      IBVAP_PACKET_BUDGET_KB: "10"
+      IBVAP_DATA_DIR: /app/data
+    volumes:
+      - ./models:/app/models:ro
+      - ./sample_videos:/app/sample_videos:ro
+      - ibvap-bop-a-data:/app/data
+
+  edge-bop-b:
+    build: .
+    image: ibvap-edge:1.0
+    container_name: ibvap-edge-bop-b
+    restart: unless-stopped
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      IBVAP_ROLE: edge
+      IBVAP_NODE_ID: BOP-SECTOR-B
+      IBVAP_CHANNELS: "Channel 2"
+      IBVAP_TELEMETRY: mqtt
+      IBVAP_MQTT_HOST: broker
+      IBVAP_MQTT_PORT: "1883"
+      IBVAP_LINK_PROFILE: SATELLITE
+      IBVAP_DATA_DIR: /app/data
+    volumes:
+      - ./models:/app/models:ro
+      - ./vedio-sih26.mp4:/app/vedio-sih26.mp4:ro
+      - ibvap-bop-b-data:/app/data
+
+  edge-charlie:
+    build: .
+    image: ibvap-edge:1.0
+    container_name: ibvap-edge-charlie
+    restart: unless-stopped
+    depends_on:
+      broker:
+        condition: service_healthy
+    environment:
+      IBVAP_ROLE: edge
+      IBVAP_NODE_ID: CHECKPOST-CHARLIE
+      IBVAP_CHANNELS: "Channel 3"
+      IBVAP_TELEMETRY: mqtt
+      IBVAP_MQTT_HOST: broker
+      IBVAP_MQTT_PORT: "1883"
+      IBVAP_LINK_PROFILE: 4G
+      IBVAP_DATA_DIR: /app/data
+    volumes:
+      - ./models:/app/models:ro
+      - ./sample_videos:/app/sample_videos:ro
+      - ibvap-charlie-data:/app/data
+
+volumes:
+  ibvap-broker-data:
+  ibvap-hq-data:
+  ibvap-bop-a-data:
+  ibvap-bop-b-data:
+  ibvap-charlie-data:

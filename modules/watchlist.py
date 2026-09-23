@@ -12,7 +12,12 @@ class WatchlistDatabase:
       - MATCH FOUND -> Suppress False Alarm, Log Event, Green UI Tag
       - NO MATCH -> Trigger Urgent Alarm, Red Siren Alert, Control Room Dispatch
     """
-    def __init__(self):
+    def __init__(self, face_index=None):
+        # Optional local biometric index (modules/frs.py). When present, identity
+        # decisions come from face embeddings; otherwise the platform runs the
+        # clearly-labelled simulated demo path.
+        self.face_index = face_index
+
         # Whitelisted Authorized Personnel (as shown in SIH technical flowchart)
         self.personnel = [
             {
@@ -71,13 +76,96 @@ class WatchlistDatabase:
 
     def verify_person(self, track_id: int) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """
-        Queries watchlist for authorized person match.
+        DEMO-ONLY lookup: maps a demo track ID to a roster entry.
+
+        This is NOT biometrics and must never be presented as such - it exists so
+        the hackathon demo can show the authorization workflow without a face
+        model installed. Real identity matching lives in modules/frs.py and is
+        surfaced through verify_face()/identity_source.
+
         Returns (is_match, personnel_record).
         """
         for person in self.personnel:
             if track_id in person["simulated_track_ids"]:
                 return True, person
         return False, None
+
+    # ------------------------------------------------------------------
+    # Biometric identity (FRS-backed)
+    # ------------------------------------------------------------------
+    @property
+    def identity_source(self) -> str:
+        """
+        'BIOMETRIC' when a face index holds enrolled identities, else
+        'SIMULATED_DEMO'. The dashboard displays this so a viewer always knows
+        which mechanism produced an authorization.
+        """
+        if self.face_index is not None and self.face_index.stats()["faces"] > 0:
+            return "BIOMETRIC"
+        return "SIMULATED_DEMO"
+
+    def enroll_biometric(
+        self,
+        embedding,
+        personnel_id: str,
+        name: str = "",
+        role: str = "AUTHORIZED_PERSONNEL",
+        unit: str = "",
+        rank: str = "",
+    ) -> str:
+        """Adds a face embedding to the local biometric index for this person."""
+        if self.face_index is None:
+            raise RuntimeError("no face index configured on this watchlist")
+        return self.face_index.add(
+            embedding,
+            person_id=personnel_id,
+            name=name,
+            role=role,
+            unit=unit,
+            rank=rank,
+        )
+
+    def verify_face(self, embedding) -> Tuple[str, Optional[Dict[str, Any]], float]:
+        """
+        Biometric 1:N check against the local face index.
+
+        Returns (decision, record, similarity) where decision is one of
+        AUTHORIZED / WATCHLIST_HIT / REVIEW / UNKNOWN.
+        """
+        if self.face_index is None:
+            return "UNKNOWN", None, 0.0
+        result = self.face_index.identify(embedding, top_k=1)
+        record = result.get("record") or None
+        similarity = float(result.get("similarity", 0.0))
+        if result["decision"] != "MATCH":
+            return result["decision"], None, similarity
+        role = (record or {}).get("role")
+        if role == "AUTHORIZED_PERSONNEL":
+            return "AUTHORIZED", record, similarity
+        return "WATCHLIST_HIT", record, similarity
+
+    def get_biometric_dataframe(self):
+        """Enrolled biometric identities, for the FRS audit panel."""
+        if self.face_index is None:
+            return pd.DataFrame(
+                columns=["Person ID", "Name", "Role", "Unit", "Enrolled Faces"]
+            )
+        records = self.face_index.identities_dataframe_records()
+        if not records:
+            return pd.DataFrame(
+                columns=["Person ID", "Name", "Role", "Unit", "Enrolled Faces"]
+            )
+        grouped: Dict[str, dict] = {}
+        for record in records:
+            entry = grouped.setdefault(record["person_id"], {
+                "Person ID": record["person_id"],
+                "Name": record.get("name", ""),
+                "Role": record.get("role", ""),
+                "Unit": record.get("unit", ""),
+                "Enrolled Faces": 0,
+            })
+            entry["Enrolled Faces"] += 1
+        return pd.DataFrame(list(grouped.values()))
 
     def verify_vehicle(self, plate_text: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """

@@ -117,17 +117,27 @@ class CascadedANPR:
         if plate_crop.size == 0 or plate_crop.shape[0] < 12 or plate_crop.shape[1] < 24:
             return None
 
-        # 2. OCR on preprocessed plate crop
+        # 2. OCR on preprocessed plate crop. Plates are a closed alphabet, so
+        # constraining recognition to it removes whole classes of misreads
+        # (punctuation, symbols), and plates often OCR as several fragments -
+        # left cluster + right cluster - so fragment order matters when joining.
         prep = self.preprocess_plate(plate_crop)
-        ocr_res = self.reader.readtext(prep)
+        ocr_res = self.reader.readtext(
+            prep,
+            allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            detail=1,
+        )
 
         parsed_text = ""
         ocr_conf = 0.0
 
         if ocr_res:
-            best_ocr = max(ocr_res, key=lambda x: x[2])
-            parsed_text = self.clean_text(best_ocr[1])
-            ocr_conf = float(best_ocr[2])
+            # Horizontal reading order (x-center), then keep the longest text:
+            # a joined plate beats any single fragment for recall, and the
+            # confidence recorded is the best fragment's, not a fiction.
+            ordered = sorted(ocr_res, key=lambda r: (r[0][0][0], r[0][0][1]))
+            parsed_text = self.clean_text("".join(r[1] for r in ordered))
+            ocr_conf = float(max(r[2] for r in ordered))
 
         # 3. Validation & Status assignment
         if len(parsed_text) >= 4 and ocr_conf >= self.ocr_conf_threshold:

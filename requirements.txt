@@ -8,3 +8,22 @@ pandas>=1.5.0
 numpy>=1.23.0
 Pillow>=9.5.0
 PyYAML>=6.0
+# Optional: real MQTT uplink for the low-bandwidth telemetry layer.
+# Without it the platform automatically falls back to the simulated field link.
+paho-mqtt>=2.0.0
+
+# Behaviour analytics (modules/pose.py) runs on top of the ultralytics pose
+# models already provided above - `yolov8n-pose.pt` / `yolo11n-pose.pt` are
+# downloaded by ultralytics, no extra package is required.
+#
+# The GIS command map (modules/gis.py) intentionally adds NOTHING: it renders as
+# self-contained inline SVG with the standard library only, because a tile-backed
+# map library cannot work on an air-gapped outpost.
+#
+# Biometric FRS (modules/frs.py) needs onnxruntime + the two ONNX models:
+#   models/face_detection_yunet.onnx  (OpenCV zoo, ~230 KB)
+#   models/arcface_w600k_r50.onnx     (insightface w600k_r50, ~174 MB)
+# Without them the platform runs the numpy descriptor fallback and reports
+# DEGRADED_NON_BIOMETRIC instead of pretending to recognise faces.
+onnxruntime>=1.16.0
+# insightface>=0.7.3   # alternative embedder/detector stack (optional)
