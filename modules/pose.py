@@ -1152,6 +1152,30 @@ class PoseEngine:
         self.last_error = ""
         self.last_latency_ms = 0.0
 
+    # -- warmup -------------------------------------------------------------
+    def warmup(self) -> bool:
+        """
+        One throwaway pose pass so the first real frame is not 1-2 s slow.
+
+        Same reasoning as the detector's warmup: the cost is real either way, so
+        it belongs in model loading (visible spinner) rather than on the first
+        frame of live video, where it reads as the app being broken.
+        """
+        if not self.available:
+            return False
+        try:
+            # numpy is imported lazily on purpose: this module imports on a bare
+            # Python, which is what lets the behaviour layer be unit-tested
+            # without the vision stack installed.
+            import numpy as np
+
+            blank = np.zeros((360, 640, 3), dtype="uint8")
+            self.estimator.estimate(blank, conf_threshold=0.5)
+            return True
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return False
+
     # -- availability -------------------------------------------------------
     @property
     def available(self) -> bool:

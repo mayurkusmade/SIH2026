@@ -71,18 +71,36 @@ def build_analyser(
     fence = None
     fence_y = None
     if fence_cfg:
-        tripwire_y = opts.get("tripwire_y") or fence_cfg["default_tripwire_y"]
-        x_start, x_end = fence_cfg["tripwire_x_range"]
-        fence = VirtualFence(
-            line_coords=((x_start, tripwire_y), (x_end, tripwire_y)),
-            zone_name=fence_cfg["zone_name"],
-        )
+        zone_pts = fence_cfg.get("polygon") if isinstance(fence_cfg, dict) else None
+        if zone_pts and len(zone_pts) >= 3:
+            # Operator-drawn polygon zone (any shape/size): the restricted area
+            # is the zone itself, and entering it is the breach event.
+            fence = VirtualFence(polygon=zone_pts, zone_name=fence_cfg["zone_name"])
+        else:
+            tripwire_y = opts.get("tripwire_y") or fence_cfg["default_tripwire_y"]
+            x_start, x_end = fence_cfg["tripwire_x_range"]
+            fence = VirtualFence(
+                line_coords=((x_start, tripwire_y), (x_end, tripwire_y)),
+                zone_name=fence_cfg["zone_name"],
+            )
         # The pose layer needs the wire's row to tell a climb from a stretch.
-        fence_y = fence.p1[1]
+        fence_y = fence.fence_y
 
     camera_tracker = tracker if tracker is not None else CentroidTracker(
         max_disappeared=20, max_distance=90.0
     )
+
+    # Last identity decisions, kept so a skipped FRS frame can still DRAW them.
+    # Identity does not change between two frames ~300 ms apart, and the module
+    # already confirms over several passes, so the overlay stays truthful while
+    # the expensive full-frame face pass is paced.
+    frs_state = {"decisions": [], "map": {}, "seen": 0}
+
+    # Newest ANPR read per vehicle track, so the plate overlay stays visible on
+    # EVERY frame. The draw used to happen only on the frame an OCR attempt
+    # succeeded (~1 read/second budgeted), so the box+text blinked off between
+    # reads and the operator lost sight of which car carried which plate.
+    last_anpr = {}
 
     def process(frame, ctx):
         events: List[dict] = []
@@ -109,16 +127,34 @@ def build_analyser(
         # and the face overlay should sit under the fence annotation.
         identity_map = {}
         if opts.get("enable_frs") and models.frs is not None:
-            try:
-                decisions = models.frs.process(
-                    frame, active_tracks, timestamp=timestamp, frame_idx=frame_idx
+            # Face detection on a full 1080p frame is the most expensive stage in
+            # the pipeline (~200 ms/frame measured), so it is paceable: at a
+            # stride of 2 the operator gets the same identity decisions across a
+            # video that runs twice as smoothly, because a person's face does not
+            # change between consecutive frames.
+            frs_stride = max(1, int(opts.get("frs_stride", 1) or 1))
+            # Phased from the analyser's own frame count, not from the absolute
+            # frame index: the FIRST analysed frame always runs, so face labels
+            # appear immediately instead of waiting for the first stride boundary.
+            run_frs = frs_stride == 1 or (frs_state["seen"] % frs_stride) == 0
+            frs_state["seen"] += 1
+            if run_frs:
+                try:
+                    decisions = models.frs.process(
+                        frame, active_tracks, timestamp=timestamp, frame_idx=frame_idx
+                    )
+                except Exception as exc:  # a broken FRS must never stop the video
+                    decisions = []
+                    models.frs.last_error = f"{type(exc).__name__}: {exc}"
+                frs_state["decisions"] = decisions or []
+                frs_state["map"] = (
+                    {d["track_id"]: d for d in decisions} if decisions else {}
                 )
-            except Exception as exc:  # a broken FRS must never stop the video
-                decisions = []
-                models.frs.last_error = f"{type(exc).__name__}: {exc}"
-            if decisions:
-                identity_map = {d["track_id"]: d for d in decisions}
-                annotated_frame = models.frs.draw_faces(annotated_frame, decisions)
+            if frs_state["decisions"]:
+                identity_map = dict(frs_state["map"])
+                annotated_frame = models.frs.draw_faces(
+                    annotated_frame, frs_state["decisions"]
+                )
 
         if fence is not None:
             new_intrusions = fence.check_intrusions(
@@ -143,34 +179,51 @@ def build_analyser(
                 anpr_res = models.anpr.process_vehicle(
                     frame, data["bbox"], track_id=track_id, frame_idx=frame_idx
                 )
-                if not anpr_res:
+                # Fresh-read bookkeeping: a NEW dict from process_vehicle is a
+                # genuine new (or improved) read - log it and fire its event.
+                # A repeated return of the SAME dict is the module's cache being
+                # replayed (throttle window, budget deferral, verified read) -
+                # that still gets DRAWN every frame, but must not re-log the
+                # same plate as a fresh detection over and over.
+                anpr_fresh = anpr_res is not None and anpr_res is not last_anpr.get(track_id)
+                if anpr_res is not None:
+                    last_anpr[track_id] = anpr_res
+                    if len(last_anpr) > 200:  # bounded: drop the oldest track
+                        last_anpr.pop(next(iter(last_anpr)))
+                else:
+                    anpr_res = last_anpr.get(track_id)
+                if anpr_res is None:
                     continue
                 is_auth_veh, veh_rec = (
                     models.watchlist.verify_vehicle(anpr_res["plate_text"])
-                    if opts.get("enable_watchlist") else (False, None)
+                    if anpr_fresh and opts.get("enable_watchlist") else (False, None)
                 )
-                veh_status = "AUTHORIZED_PATROL_VEHICLE" if is_auth_veh else anpr_res["status"]
-                veh_details = (
-                    f"{veh_rec['unit']} ({veh_rec['vehicle_type']})" if is_auth_veh
-                    else f"Plate Conf: {anpr_res['plate_conf']*100:.0f}%"
-                )
+                if anpr_fresh:
+                    veh_status = "AUTHORIZED_PATROL_VEHICLE" if is_auth_veh else anpr_res["status"]
+                    veh_details = (
+                        f"{veh_rec['unit']} ({veh_rec['vehicle_type']})" if is_auth_veh
+                        else f"Plate Conf: {anpr_res['plate_conf']*100:.0f}%"
+                    )
+                    events.append({
+                        "event_type": "AUTHORIZED_VEHICLE" if is_auth_veh else "VEHICLE_ANPR",
+                        "track_id": track_id,
+                        "category": "vehicle",
+                        "class_name": data.get("class_name", "car"),
+                        "confidence": data.get("conf", 0.0),
+                        "plate_text": anpr_res["plate_text"],
+                        "ocr_confidence": anpr_res["ocr_conf"],
+                        "status": veh_status,
+                        "details": veh_details,
+                        "zone": "Checkpost Charlie Ingress",
+                        "identity": veh_details,
+                        "location": "",
+                        "timestamp": timestamp,
+                        "bbox": data.get("bbox"),
+                    })
+                # The plate box + read text are drawn EVERY frame from the
+                # tracked state, so the overlay never blinks off between the
+                # budgeted OCR passes.
                 annotated_frame = models.anpr.draw_anpr(annotated_frame, anpr_res)
-                events.append({
-                    "event_type": "AUTHORIZED_VEHICLE" if is_auth_veh else "VEHICLE_ANPR",
-                    "track_id": track_id,
-                    "category": "vehicle",
-                    "class_name": data.get("class_name", "car"),
-                    "confidence": data.get("conf", 0.0),
-                    "plate_text": anpr_res["plate_text"],
-                    "ocr_confidence": anpr_res["ocr_conf"],
-                    "status": veh_status,
-                    "details": veh_details,
-                    "zone": "Checkpost Charlie Ingress",
-                    "identity": veh_details,
-                    "location": "",
-                    "timestamp": timestamp,
-                    "bbox": data.get("bbox"),
-                })
 
         # Behaviour analytics LAST: it consumes the final track set (so a pose is
         # bound to the same track ID the fence just used) and its overlay sits on

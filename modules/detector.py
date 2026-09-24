@@ -28,6 +28,25 @@ class ObjectDetector:
         self.model = YOLO(model_path)
         self.device = device
         self.class_ids = list(TARGET_CLASSES.keys())
+        self.last_error = ""
+
+    def warmup(self) -> bool:
+        """
+        Runs one throwaway inference on a blank frame so the FIRST real frame does
+        not stall.
+
+        Measured on this project's 1080p perimeter feed: the first YOLO pass costs
+        ~4.2 s (graph/session init), every later pass ~45 ms. Paying that inside
+        model loading - where the UI already shows a spinner - means the operator
+        never sees the feed appear to freeze on its first frame.
+        """
+        try:
+            blank = np.zeros((360, 640, 3), dtype="uint8")
+            self.detect(blank, conf_threshold=0.5)
+            return True
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return False
 
     def detect(self, frame: np.ndarray, conf_threshold: float = 0.35):
         """

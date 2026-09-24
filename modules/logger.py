@@ -77,6 +77,12 @@ class EventLogger:
     ):
         if timestamp is None:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        elif "-" not in str(timestamp):
+            # The per-frame pipeline context carries a time-only HH:MM:SS stamp;
+            # prefix today's date so every stored record has a full date+time
+            # stamp (operator requirement: plates and intrusions must be
+            # auditable by DAY, not just by time-of-day).
+            timestamp = f"{datetime.now().strftime('%Y-%m-%d')} {timestamp}"
 
         event = {
             "timestamp": timestamp,

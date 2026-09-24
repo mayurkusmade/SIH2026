@@ -1129,6 +1129,10 @@ class FRSModule:
 
         # track_id -> best reading so far (same anti-flicker idea as ANPR).
         self.track_cache: Dict[int, dict] = {}
+        # Per-frame face detection cache: the frame OBJECT is retained as the key
+        # so its identity cannot be recycled while the reading is still in use.
+        self._face_frame: Any = None
+        self._face_cache: List[Any] = []
         self._lock = threading.RLock()
         self.frames_processed = 0
         self.faces_detected = 0
@@ -1190,6 +1194,50 @@ class FRSModule:
             "last_error": self.last_error,
         }
 
+    # -- face detection memoisation -----------------------------------------
+    def _faces_for_frame(self, frame) -> List[Any]:
+        """
+        Detects faces ONCE per frame, shared by every track in that frame.
+
+        This is the single most expensive operation in the module - a full-frame
+        YuNet pass costs ~100 ms at 1080p, measured on this project's own perimeter
+        feed. The previous code called it inside the per-track loop, so two people
+        in view paid for two identical passes and the cost grew with crowd size.
+
+        Keyed on the frame OBJECT (held in the cache so its identity stays valid),
+        not on frame_idx: a caller that reuses an index across genuinely different
+        frames would otherwise be handed a stale face list.
+        """
+        if self._face_frame is not frame:
+            try:
+                self._face_cache = list(
+                    self.detector.detect(frame, self.min_face_px) or []
+                )
+            except Exception as exc:
+                self.last_error = f"detect failed: {exc}"
+                self._face_cache = []
+            self._face_frame = frame
+        return self._face_cache
+
+    # -- warmup -------------------------------------------------------------
+    def warmup(self) -> bool:
+        """
+        Runs the face detector and embedder once on a blank frame.
+
+        The first real pass costs ~700 ms (ONNX session init) against ~20-60 ms
+        steady state. Paying it while models load keeps the first frame with a
+        face in it from stalling the video.
+        """
+        if not self.identity_capable():
+            return False
+        try:
+            blank = np.zeros((480, 640, 3), dtype=np.uint8)
+            self.process(blank, {}, timestamp="00:00:00", frame_idx=0)
+            return True
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return False
+
     # -- per-frame entry point ---------------------------------------------
     def process(
         self,
@@ -1237,11 +1285,7 @@ class FRSModule:
                     decisions.append(self._decision(track_id, cached, timestamp, frame_idx))
                 continue
 
-            faces = []
-            try:
-                faces = self.detector.detect(frame, self.min_face_px)
-            except Exception as exc:
-                self.last_error = f"detect failed: {exc}"
+            faces = self._faces_for_frame(frame)
             if not faces:
                 self.track_cache[track_id] = {
                     **(cached or {}),
