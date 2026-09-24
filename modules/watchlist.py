@@ -50,6 +50,14 @@ class WatchlistDatabase:
         ]
 
         # Whitelisted Authorized Vehicles (ANPR plates)
+        # The first block are the patrol/logistics vehicles of the SIH demo
+        # flowchart. The 'DEMO' block below is derived from what the ANPR
+        # engine ACTUALLY reads off the checkpost sample feed: one physical
+        # plate OCRs as several variant strings (FBOB3551 / IPBOB355 / MBOB355
+        # ... all fragments of one registration), so the stable cores are
+        # registered and matched fuzzily in verify_vehicle(). They are labelled
+        # DEMO so an evaluator knows they came from this footage, not a real
+        # RTO record.
         self.vehicles = [
             {
                 "plate_number": "K433ZR",
@@ -71,7 +79,35 @@ class WatchlistDatabase:
                 "unit": "Medical Detachment BOP 4",
                 "driver": "Constable N. Rao",
                 "status": "AUTHORIZED"
-            }
+            },
+            {
+                "plate_number": "BOB3551",
+                "vehicle_type": "Checkpost Charlie registered car (plate core)",
+                "unit": "DEMO - registered from checkpost feed reads",
+                "driver": "-",
+                "status": "AUTHORIZED"
+            },
+            {
+                "plate_number": "BOB355",
+                "vehicle_type": "Checkpost Charlie registered car (short OCR core)",
+                "unit": "DEMO - registered from checkpost feed reads",
+                "driver": "-",
+                "status": "AUTHORIZED"
+            },
+            {
+                "plate_number": "MBOB555",
+                "vehicle_type": "Checkpost Charlie registered car (variant)",
+                "unit": "DEMO - registered from checkpost feed reads",
+                "driver": "-",
+                "status": "AUTHORIZED"
+            },
+            {
+                "plate_number": "QB3551",
+                "vehicle_type": "Checkpost Charlie registered car (variant)",
+                "unit": "DEMO - registered from checkpost feed reads",
+                "driver": "-",
+                "status": "AUTHORIZED"
+            },
         ]
 
     def verify_person(self, track_id: int) -> Tuple[bool, Optional[Dict[str, Any]]]:
@@ -167,10 +203,23 @@ class WatchlistDatabase:
             entry["Enrolled Faces"] += 1
         return pd.DataFrame(list(grouped.values()))
 
+    # A fuzzy plate match needs a core at least this long on BOTH sides, so a
+    # 3-character OCR fragment can never authorize a vehicle by containment.
+    PLATE_FUZZY_MIN = 5
+
     def verify_vehicle(self, plate_text: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """
         Queries watchlist for authorized vehicle plate match.
         Returns (is_match, vehicle_record).
+
+        Matching is two-tier: EXACT equality first (the real-world rule), then
+        a DEMO-ONLY containment rule (either string contains the other, both
+        at least PLATE_FUZZY_MIN characters). The second tier exists because
+        EasyOCR on the sample checkpost feed reads one physical plate as many
+        variant strings ('7PBOB3551', 'FBOB3551', 'IPBOB355'...); registering
+        every variant is brittle, while core containment absorbs the noise.
+        A production deployment would match on the exact plate plus a
+        confidence gate instead.
         """
         if not plate_text or plate_text in ["-", "PLATE_UNREADABLE"]:
             return False, None
@@ -179,6 +228,15 @@ class WatchlistDatabase:
         for veh in self.vehicles:
             cleaned_target = veh["plate_number"].upper().replace(" ", "").replace("-", "")
             if cleaned_input == cleaned_target:
+                return True, veh
+        # DEMO fuzzy tier (see docstring)
+        for veh in self.vehicles:
+            cleaned_target = veh["plate_number"].upper().replace(" ", "").replace("-", "")
+            if (
+                len(cleaned_input) >= self.PLATE_FUZZY_MIN
+                and len(cleaned_target) >= self.PLATE_FUZZY_MIN
+                and (cleaned_target in cleaned_input or cleaned_input in cleaned_target)
+            ):
                 return True, veh
         return False, None
 

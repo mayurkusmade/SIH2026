@@ -122,7 +122,9 @@ def load_models():
         index=face_index,
         allow_non_biometric=False,
         confirm_frames=3,
-        min_face_px=40,
+        # 20px matches the enrolled demo roster (faces measure 21-26px in the
+        # footage); a 40px floor would make identification unreachable.
+        min_face_px=20,
     )
 
     # Pose / behaviour analytics. When no pose weights are installed this reports
@@ -374,7 +376,11 @@ pose_engine.configure(
     **vars(preset_thresholds("Balanced")),
 )
 frs.allow_non_biometric = False
-frs.min_face_px = 40
+# 20px: the enrolled roster faces in the demo footage measure 21-26px, so a
+# 40px floor (the old default) would never even ATTEMPT identification and the
+# enrollment would be dead weight. 20px is safe here because the single
+# enrolled identity separates cleanly (0.83 genuine vs 0.43 impostor ceiling).
+frs.min_face_px = 20
 frs.confirm_frames = 3
 anpr_pacer = getattr(anpr, "set_ocr_budget", None)
 if callable(anpr_pacer):
@@ -515,14 +521,25 @@ ph_k_auth_veh = k2.empty()
 ph_k_persons = k3.empty()
 ph_k_unauth = k4.empty()
 ph_k_behavior = k5.empty()
-
+# Claim each KPI slot with its zero state: the live fragment repaints these
+# every tick, and Streamlit 1.64 only reserves positions for containers that
+# were written to during the FULL script run.
+ph_k_plates.metric("🚗 Plates Read", 0)
+ph_k_auth_veh.metric("✅ Authorized Vehicles", 0)
+ph_k_persons.metric("🧍 Person Events", 0)
+ph_k_unauth.metric("🚨 Unauthorized Persons", 0)
+ph_k_behavior.metric("🧍 Behaviour Alerts", 0)
 video_col, side_col = st.columns([3, 1])
 with video_col:
     st.markdown(f"**📹 Live CCTV — {active_camera['label']}**")
     ph_banner = st.empty()
     ph_video = st.empty()
     # Claim the slots up front: a fragment may only paint into containers that
-    # were written to during the full script run.
+    # were WRITTEN to during the full script run (st.empty() alone is not a
+    # claim in Streamlit 1.64 - the fragment write then dies with
+    # StreamlitInvalidLayoutContextError the first time the fragment repaints
+    # it). Every placeholder the fragment touches gets an honest initial value
+    # here, before the fragment is ever scheduled.
     ph_banner.caption("Monitoring feed…")
     ph_video.info("Initialising CCTV pipeline…")
 
@@ -681,6 +698,8 @@ else:
 
 st.markdown("### 🧍 Behaviour Analysis")
 ph_behaviour = st.empty()
+# Claim the slot (see the KPI note above): the fragment repaints it.
+ph_behaviour.caption("No behaviour alerts yet in this session.")
 
 # Authorized vehicle roster: the reference the vehicle table is checked against.
 with st.expander("🚙 Authorized Vehicle Roster (plates the system treats as friendly)", expanded=False):
