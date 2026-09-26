@@ -136,8 +136,8 @@ SIH26187/
 ### 1. Installation
 ```bash
 # Clone repository
-git clone https://github.com/akshad1007/SIH26.git
-cd SIH26
+git clone https://github.com/mayurkusmade/SIH2026.git
+cd SIH2026
 
 # Install dependencies
 pip install -r requirements.txt
@@ -189,6 +189,9 @@ python test_phase7.py
 
 # Test behaviour analytics (pose geometry, precision guards, pipeline wiring)
 python test_phase8.py
+
+# Test throughput & UI-payload contracts
+python test_phase9.py
 ```
 
 ### 5. Headless Edge Agent (no browser)
@@ -244,4 +247,3 @@ RTSP/ONVIF URL.
 
 ---
 *Built for the Smart India Hackathon 2026.*
-
